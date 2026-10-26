@@ -1,0 +1,177 @@
+/* =====================================================================
+   DATA CACHE · Carga rápida del Resumen (BBDD_CONSOLIDADO)
+   Pega este archivo como archivo nuevo (DataCache.gs) en tu proyecto.
+   NO modifica ni reemplaza tu getDashboardData(): la envuelve.
+
+   Cómo funciona
+   1) Primera carga (o caché vencido): llama a tu getDashboardData() como
+      hoy, separa las filas en "mes en curso" y "resto" y las guarda
+      comprimidas en CacheService (por usuario, respetando su rol).
+   2) Siguientes cargas dentro del TTL: lee el caché (rápido, sin tocar
+      la hoja).
+   3) La web pide primero el mes en curso (pinta enseguida) y luego el
+      resto en segundo plano.
+   4) El botón "Actualizar" fuerza datos frescos y renueva el caché.
+   ===================================================================== */
+
+// Minutos que se conserva el caché (máx. 360). Sube o baja según tu necesidad.
+const DASH_CACHE_MINUTOS = 15;
+// Cambia este texto si quieres invalidar TODOS los cachés (p. ej. tras cambiar columnas).
+const DASH_CACHE_VERSION = 'v1';
+// Zona horaria para decidir cuál es el "mes en curso".
+const DASH_TZ = 'America/Lima';
+
+/* ---------- Utilidades de caché (comprime + trocea en bloques < 100 KB) ---------- */
+function ddPut_(cache, key, obj) {
+  try {
+    const json = JSON.stringify(obj);
+    const gz = Utilities.gzip(Utilities.newBlob(json, 'application/json'));
+    const b64 = Utilities.base64Encode(gz.getBytes());
+    const CH = 90000, n = Math.ceil(b64.length / CH), map = {};
+    for (let i = 0; i < n; i++) map[key + '_' + i] = b64.substr(i * CH, CH);
+    map[key] = String(n);
+    cache.putAll(map, Math.min(21600, DASH_CACHE_MINUTOS * 60));
+    return true;
+  } catch (e) {
+    return false; // si no cabe, simplemente no se cachea
+  }
+}
+
+function ddGet_(cache, key) {
+  try {
+    const n = parseInt(cache.get(key), 10);
+    if (!n) return null;
+    const keys = [];
+    for (let i = 0; i < n; i++) keys.push(key + '_' + i);
+    const parts = cache.getAll(keys);
+    let b64 = '';
+    for (let i = 0; i < n; i++) {
+      const p = parts[key + '_' + i];
+      if (p == null) return null; // se venció o fue desalojado
+      b64 += p;
+    }
+    const bytes = Utilities.base64Decode(b64);
+    const json = Utilities.ungzip(Utilities.newBlob(bytes, 'application/x-gzip')).getDataAsString();
+    return JSON.parse(json);
+  } catch (e) {
+    return null;
+  }
+}
+
+function ddHash_(txt) {
+  const d = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, String(txt));
+  return d.map(function (b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
+}
+
+/* ---------- Separar mes en curso / resto ---------- */
+function ddNorm_(s) {
+  return String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+}
+
+function ddFechaKey_(row) {
+  const keys = Object.keys(row || {});
+  let k = keys.filter(function (x) { return ddNorm_(x) === 'fecha'; })[0];
+  if (!k) k = keys.filter(function (x) { return ddNorm_(x).indexOf('fecha') === 0; })[0];
+  return k || null;
+}
+
+/** Devuelve 'yyyyMM' o null si no se puede interpretar la fecha. */
+function ddYM_(v) {
+  if (v == null || v === '') return null;
+  if (Object.prototype.toString.call(v) === '[object Date]') return Utilities.formatDate(v, DASH_TZ, 'yyyyMM');
+  if (typeof v === 'number') {
+    if (v > 20000 && v < 80000) return Utilities.formatDate(new Date(Math.round((v - 25569) * 86400000)), 'UTC', 'yyyyMM');
+    return null;
+  }
+  const s = String(v).trim();
+  let m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
+  if (m) return m[1] + ('0' + m[2]).slice(-2);
+  m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
+  if (m) {
+    const y = m[3].length === 2 ? '20' + m[3] : m[3];
+    return y + ('0' + m[2]).slice(-2);
+  }
+  return null;
+}
+
+function ddSplit_(rows) {
+  const ym = Utilities.formatDate(new Date(), DASH_TZ, 'yyyyMM');
+  const key = rows.length ? ddFechaKey_(rows[0]) : null;
+  if (!key) return { actual: rows, resto: [] };
+  const actual = [], resto = [];
+  for (let i = 0; i < rows.length; i++) {
+    (ddYM_(rows[i][key]) === ym ? actual : resto).push(rows[i]);
+  }
+  if (!actual.length) return { actual: rows, resto: [] }; // sin datos del mes: no hay carga por fases
+  return { actual: actual, resto: resto };
+}
+
+/* ---------- Endpoint principal ---------- */
+/**
+ * fase: 'actual' (mes en curso) | 'resto' (meses anteriores) | 'todo'
+ * forzar: true = ignora el caché y lo renueva (botón Actualizar)
+ */
+function getDashboardDataFast(fase, forzar) {
+  const t0 = Date.now();
+  fase = (fase === 'resto' || fase === 'todo') ? fase : 'actual';
+  const email = String(Session.getActiveUser().getEmail() || '').toLowerCase().trim();
+
+  // Sin correo de sesión NO se cachea (evita mezclar datos entre usuarios con distinto rol).
+  const puedeCachear = !!email;
+  const cache = CacheService.getScriptCache();
+  const base = 'DD_' + DASH_CACHE_VERSION + '_' + ddHash_(email);
+
+  let meta = null, actual = null, resto = null, desdeCache = false;
+
+  if (puedeCachear && !forzar) {
+    meta = ddGet_(cache, base + '_meta');
+    if (meta) {
+      if (fase === 'actual' || fase === 'todo') actual = ddGet_(cache, base + '_actual');
+      if (fase === 'resto' || fase === 'todo') resto = ddGet_(cache, base + '_resto');
+      const falta = ((fase === 'actual' || fase === 'todo') && !actual) || ((fase === 'resto' || fase === 'todo') && !resto);
+      if (falta) { meta = null; actual = null; resto = null; }
+      else desdeCache = true;
+    }
+  }
+
+  if (!desdeCache) {
+    // Camino lento: tu función de siempre
+    const full = getDashboardData();
+    const rows = (full && full.data) ? full.data : [];
+    const parts = ddSplit_(rows);
+    meta = { ts: Date.now(), total: rows.length, parcial: parts.resto.length > 0, base: {} };
+    Object.keys(full || {}).forEach(function (k) { if (k !== 'data') meta.base[k] = full[k]; });
+    actual = parts.actual;
+    resto = parts.resto;
+    if (puedeCachear) {
+      ddPut_(cache, base + '_actual', actual);
+      ddPut_(cache, base + '_resto', resto);
+      ddPut_(cache, base + '_meta', meta);
+    }
+  }
+
+  const out = {};
+  Object.keys(meta.base).forEach(function (k) { out[k] = meta.base[k]; });
+  if ('isAdmin' in out && typeof esAdmin_ === 'function') out.isAdmin = esAdmin_(email);
+  out.data = fase === 'actual' ? actual : (fase === 'resto' ? resto : actual.concat(resto));
+  out.fase = fase;
+  out.parcial = (fase === 'actual') && meta.parcial;
+  out.total = meta.total;
+  out.desdeCache = desdeCache;
+  out.cacheEdadSeg = Math.round((Date.now() - meta.ts) / 1000);
+  out.ms = Date.now() - t0;
+  return out;
+}
+
+/** Opcional: bórralo todo si necesitas limpiar tu caché manualmente (ejecútala desde el editor). */
+function limpiarCacheDashboard() {
+  const email = String(Session.getActiveUser().getEmail() || '').toLowerCase().trim();
+  const base = 'DD_' + DASH_CACHE_VERSION + '_' + ddHash_(email);
+  const c = CacheService.getScriptCache();
+  ['_meta', '_actual', '_resto'].forEach(function (s) {
+    const n = parseInt(c.get(base + s), 10) || 0;
+    const ks = [base + s];
+    for (let i = 0; i < n; i++) ks.push(base + s + '_' + i);
+    c.removeAll(ks);
+  });
+}

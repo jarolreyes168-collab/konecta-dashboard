@@ -1,0 +1,117 @@
+/* =====================================================================
+   AGENTES A CARGO (Formulario de venta)
+   Pega este archivo como archivo nuevo (AgentesACargo.gs) en tu proyecto.
+   NO modifica tu getDatosUsuarioDota() ni ninguna otra función.
+
+   Qué hace: si el usuario conectado aparece en la columna
+   "Correo Supervisor" (supervisores) o en la columna "Correo Coordinador"
+   (coordinadores, opcional) de la hoja DOTA, devuelve los agentes de esas
+   filas (correo, usuario, DNI, campaña, origen de contacto).
+   Si no aparece (es un agente), devuelve la lista vacía y el formulario
+   sigue funcionando como siempre.
+   ===================================================================== */
+
+// Nombre de la hoja DOTA
+const DOTA_AC_SHEET_NAME = 'DOTA';
+
+// Libro donde está la hoja DOTA. Vacío = el libro asociado a este proyecto.
+// Si tu getDatosUsuarioDota() abre la hoja con un ID (openById), copia ese mismo ID aquí.
+const DOTA_AC_SPREADSHEET_ID = '';
+
+/* ---------- Utilidades ---------- */
+function dotaAcNorm_(s) {
+  return String(s == null ? '' : s).toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+/** Busca el índice de columna: primero coincidencia exacta con alguno de los nombres; luego por "contiene". */
+function dotaAcCol_(normHeaders, exactos, contiene, excluye) {
+  for (let i = 0; i < normHeaders.length; i++) {
+    if (exactos.indexOf(normHeaders[i]) !== -1) return i;
+  }
+  if (contiene) {
+    for (let j = 0; j < normHeaders.length; j++) {
+      const h = normHeaders[j];
+      if (!h || h.indexOf(contiene) === -1) continue;
+      if (excluye && excluye.some(function (x) { return h.indexOf(x) !== -1; })) continue;
+      return j;
+    }
+  }
+  return -1;
+}
+
+function dotaAcSheet_() {
+  const ss = DOTA_AC_SPREADSHEET_ID
+    ? SpreadsheetApp.openById(DOTA_AC_SPREADSHEET_ID)
+    : SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) throw new Error('No se pudo abrir el libro de DOTA. Configura DOTA_AC_SPREADSHEET_ID en AgentesACargo.gs.');
+  const sh = ss.getSheetByName(DOTA_AC_SHEET_NAME);
+  if (!sh) throw new Error('No existe la hoja "' + DOTA_AC_SHEET_NAME + '".');
+  return sh;
+}
+
+/* ---------- Endpoint ---------- */
+/**
+ * Devuelve { ok, supervisor, agentes: [ {correo, usuario, dni, campania, origenContacto, nombre} ] }
+ * Lista vacía => el usuario no es supervisor de nadie (se usa el flujo normal de agente).
+ */
+function getAgentesACargoDota() {
+  const email = String(Session.getActiveUser().getEmail() || '').toLowerCase().trim();
+  if (!email) return { ok: true, supervisor: '', agentes: [] };
+
+  const sh = dotaAcSheet_();
+  const lastRow = sh.getLastRow(), lastCol = sh.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return { ok: true, supervisor: email, agentes: [] };
+
+  const values = sh.getRange(1, 1, lastRow, lastCol).getValues();
+
+  // Fila de encabezados: la primera (entre las 10 primeras) que tenga "Correo Supervisor" o "Correo Coordinador"
+  let hRow = -1, norm = [];
+  for (let r = 0; r < Math.min(10, values.length); r++) {
+    const n = values[r].map(dotaAcNorm_);
+    if (n.indexOf('correosupervisor') !== -1 || n.indexOf('correocoordinador') !== -1) { hRow = r; norm = n; break; }
+  }
+  if (hRow === -1) throw new Error('No se encontró la columna "Correo Supervisor" (ni "Correo Coordinador") en la hoja ' + DOTA_AC_SHEET_NAME + '.');
+
+  const cSup = norm.indexOf('correosupervisor');      // puede ser -1
+  const cCoord = norm.indexOf('correocoordinador');   // opcional, puede ser -1
+  const cCorreo = dotaAcCol_(norm, ['correo', 'correoagente', 'correoasesor', 'correoelectronico', 'email', 'mail', 'correocorporativo'], 'correo', ['supervisor', 'coordinador']);
+  const cUsuario = dotaAcCol_(norm, ['usuario', 'usuarioasesor', 'usuarioagente', 'user'], 'usuario', null);
+  const cDni = dotaAcCol_(norm, ['dni', 'documento', 'numerodocumento', 'nrodocumento'], 'dni', null);
+  const cCamp = dotaAcCol_(norm, ['campana', 'campania'], 'campan', null);
+  const cOrig = dotaAcCol_(norm, ['origendecontacto', 'origencontacto', 'origen'], 'origen', null);
+  const cNom = dotaAcCol_(norm, ['nombrecompleto', 'nombreasesor', 'nombreagente', 'nombreyapellido', 'nombre', 'asesor', 'agente'], null, null);
+
+  if (cUsuario === -1 || cDni === -1) throw new Error('En DOTA no se encontraron las columnas Usuario y/o DNI.');
+
+  const txt = function (r, c) { return c === -1 ? '' : String(values[r][c] == null ? '' : values[r][c]).trim(); };
+  const agentes = [], vistos = {};
+
+  for (let r = hRow + 1; r < values.length; r++) {
+    // Las celdas pueden traer uno o varios correos separados por coma, punto y coma o espacio
+    const responsables = [];
+    if (cSup !== -1) responsables.push.apply(responsables, String(values[r][cSup] || '').toLowerCase().split(/[;,\s]+/));
+    if (cCoord !== -1) responsables.push.apply(responsables, String(values[r][cCoord] || '').toLowerCase().split(/[;,\s]+/));
+    if (responsables.indexOf(email) === -1) continue;
+
+    const usuario = txt(r, cUsuario), dni = txt(r, cDni);
+    if (!usuario && !dni) continue;
+
+    const clave = (txt(r, cCorreo) || usuario || dni).toLowerCase();
+    if (vistos[clave]) continue;
+    vistos[clave] = 1;
+
+    agentes.push({
+      correo: txt(r, cCorreo),
+      usuario: usuario,
+      dni: dni,
+      campania: txt(r, cCamp),
+      origenContacto: txt(r, cOrig),
+      nombre: txt(r, cNom)
+    });
+  }
+
+  agentes.sort(function (a, b) { return a.usuario.localeCompare(b.usuario, 'es'); });
+  return { ok: true, supervisor: email, agentes: agentes };
+}

@@ -1,0 +1,1643 @@
+/**
+ * Servidor Web Apps Script - Dashboard de Gestión (Konecta)
+ * Sistema de Control de Acceso, Exportación e Integración Pick Up,
+ * Delivery, Terminales, Accesorios y KPIs Histórico
+ */
+
+// ID del Google Spreadsheet destino para guardar las respuestas del formulario
+
+const ID_SPREADSHEET_DESTINO = '1nZOzWpbAd3XnEAcr-VmGuzkRtq36RHoOmvBwB7Bu6h8';
+
+const CORREOS_COORDINADORES = [
+  "jarol.reyes@konecta.com",
+  "monica.modesto@konecta.com",
+  "U77115341@konecta.com",
+  "ysabel.casas@konecta.com",
+  "fabricio.rojas@konecta.com",
+  "ricardo.quispe@konecta.com",
+  "U46955750@konecta.com",
+  "u70148872@konecta.com",
+  "omar.torres@konecta.com",
+  "U73801699@konecta.com",
+  "U75932429@konecta.com",
+  "vanessa.chuquinaupa@konecta.com",
+  "adallarosa@konecta.com",
+  "estefanny.rodriguez@konecta.com",
+  "ana.torres.mosquera@konecta.com",
+  "U5447675@konecta.com",
+  "vanessa.torres@konecta.com",
+  "cesar.bejarano@konecta.com"
+];
+
+const CORREOS_SUPERVISORES = [
+  "bo.app@konecta.com",
+  "u40147813@konecta.com",
+  "ronild.arevalo@konecta.com",
+  "u73038855@konecta.com",
+  "rolando.estrada@konecta.com",
+  "U48180648@konecta.com",
+  "liderespostpago@konecta.com",
+  "efrain.huaman@konecta.com",
+  "carlos.bazan@konecta.com",
+  "U70782979@konecta.com",
+  "lourdes.ruiz@konecta.com",
+  "Luis.veramatos@konecta.com",
+  "milagros.melgarejo.esquivel@konecta.com",
+  "cynthia.gamarra@konecta.com",
+  "keren.arrioja@konecta.com",
+  "daniel.manrique@konecta.com",
+  "anadela.vega@konecta.com",
+  "u77213252@konecta.com"
+];
+
+
+/**
+ * Carga la página principal.
+ */
+function doGet() {
+  var template;
+  try {
+    template = HtmlService.createTemplateFromFile('Index');
+  } catch (e1) {
+    try {
+      template = HtmlService.createTemplateFromFile('index');
+    } catch (e2) {
+      template = HtmlService.createTemplateFromFile('index.html');
+    }
+  }
+
+  return template
+    .evaluate()
+    .setTitle('Integrado de Gestión - Konecta')
+    .addMetaTag(
+      'viewport',
+      'width=device-width, initial-scale=1'
+    )
+    .setXFrameOptionsMode(
+      HtmlService.XFrameOptionsMode.ALLOWALL
+    );
+}
+
+
+/**
+ * Busca el índice de una columna ignorando espacios,
+ * mayúsculas, tildes y caracteres especiales.
+ */
+function findColIndex(headers, colName) {
+  if (!headers || !colName) {
+    return -1;
+  }
+
+  const normalizar = function(valor) {
+    return String(valor || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]/g, '');
+  };
+
+  const target = normalizar(colName);
+
+  return headers.findIndex(function(header) {
+    return normalizar(header) === target;
+  });
+}
+
+
+/**
+ * Obtiene el correo del usuario para el dashboard.
+ */
+function getUserEmailSafe() {
+  let email = '';
+
+  try {
+    email = Session
+      .getActiveUser()
+      .getEmail();
+  } catch (e) {
+    console.log(
+      'No se pudo obtener correo con getActiveUser: ' +
+      e.message
+    );
+  }
+
+  if (!email) {
+    try {
+      email = Session
+        .getEffectiveUser()
+        .getEmail();
+    } catch (e) {
+      console.log(
+        'No se pudo obtener correo con getEffectiveUser: ' +
+        e.message
+      );
+    }
+  }
+
+  return String(email || '')
+    .toLowerCase()
+    .trim();
+}
+
+
+/**
+ * Obtiene exclusivamente el correo del usuario conectado.
+ */
+function obtenerCorreoSesionFormulario_() {
+  let email = '';
+
+  try {
+    email = Session
+      .getActiveUser()
+      .getEmail();
+  } catch (e) {
+    console.log(
+      'No se pudo obtener el correo del usuario activo: ' +
+      e.message
+    );
+  }
+
+  return String(email || '')
+    .trim()
+    .toLowerCase();
+}
+
+
+/**
+ * Obtiene los datos principales del dashboard.
+ */
+/**
+ * Obtiene los datos principales del dashboard.
+ */
+function getDashboardData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(
+    'BBDD_CONSOLIDADO'
+  );
+
+  if (!sheet) {
+    throw new Error(
+      'No se encontró la pestaña "BBDD_CONSOLIDADO". ' +
+      'Verifica el nombre exacto.'
+    );
+  }
+
+  const displayValues = sheet
+    .getDataRange()
+    .getDisplayValues();
+
+  if (displayValues.length <= 1) {
+    return {
+      userEmail: 'Sin Datos',
+      role: 'Agente',
+      data: []
+    };
+  }
+
+  const headers = displayValues[0].map(function(header) {
+    return String(header).trim();
+  });
+
+  const rows = displayValues.slice(1);
+  const userEmail = getUserEmailSafe();
+
+  if (userEmail === '') {
+    throw new Error(
+      'Seguridad: No se pudo verificar la identidad ' +
+      'de la cuenta de Google. Acceso denegado.'
+    );
+  }
+
+  const isCoordinador =
+    CORREOS_COORDINADORES
+      .map(function(email) {
+        return email.toLowerCase().trim();
+      })
+      .includes(userEmail);
+
+  // ==========================================
+  // 1. NUEVA VALIDACIÓN: Perfil de Supervisor
+  // ==========================================
+  const isSupervisor =
+    CORREOS_SUPERVISORES
+      .map(function(email) {
+        return email.toLowerCase().trim();
+      })
+      .includes(userEmail);
+
+  let filteredRows = [];
+
+  const colCorreoAgenteIdx = findColIndex(
+    headers,
+    'Correo Agente'
+  );
+
+  // Buscamos el índice de la columna solicitada para el filtro
+  const colCorreoSuperIdx = findColIndex(
+    headers,
+    'CORREO_SUPERVISOR'
+  );
+
+  // ==========================================
+  // 2. NUEVA LÓGICA DE FILTRADO SEGÚN EL PERFIL
+  // ==========================================
+  if (isCoordinador) {
+    // El coordinador ve todas las ventas de la base
+    filteredRows = rows;
+  } else if (isSupervisor) {
+    // El supervisor ve solo las ventas de sus asesores usando CORREO_SUPERVISOR
+    if (colCorreoSuperIdx === -1) {
+      throw new Error(
+        'Error de Estructura: No se encontró la columna ' +
+        '"CORREO_SUPERVISOR" en la base de datos.'
+      );
+    }
+
+    filteredRows = rows.filter(function(row) {
+      return String(
+        row[colCorreoSuperIdx] || ''
+      )
+        .toLowerCase()
+        .trim() === userEmail;
+    });
+  } else {
+    // El agente estándar ve únicamente sus propias ventas
+    if (colCorreoAgenteIdx === -1) {
+      throw new Error(
+        'Error de Estructura: No se encontró la columna ' +
+        '"Correo Agente" en la base de datos.'
+      );
+    }
+
+    filteredRows = rows.filter(function(row) {
+      return String(
+        row[colCorreoAgenteIdx] || ''
+      )
+        .toLowerCase()
+        .trim() === userEmail;
+    });
+  }
+
+  let userName = '';
+  let userMatchedRows = [];
+
+  if (colCorreoAgenteIdx !== -1) {
+    userMatchedRows = rows.filter(function(row) {
+      return String(
+        row[colCorreoAgenteIdx] || ''
+      )
+        .toLowerCase()
+        .trim() === userEmail;
+    });
+  }
+
+  if (userMatchedRows.length > 0) {
+    const colRepIdx = findColIndex(
+      headers,
+      'Representante'
+    );
+
+    const colUserIdx = findColIndex(
+      headers,
+      'Usuario'
+    );
+
+    const colCoordIdx = findColIndex(
+      headers,
+      'Coordinador'
+    );
+
+    if (
+      colRepIdx !== -1 &&
+      userMatchedRows[0][colRepIdx]
+    ) {
+      userName = String(
+        userMatchedRows[0][colRepIdx]
+      ).trim();
+    } else if (
+      colUserIdx !== -1 &&
+      userMatchedRows[0][colUserIdx]
+    ) {
+      userName = String(
+        userMatchedRows[0][colUserIdx]
+      ).trim();
+    } else if (
+      colCoordIdx !== -1 &&
+      userMatchedRows[0][colCoordIdx]
+    ) {
+      userName = String(
+        userMatchedRows[0][colCoordIdx]
+      ).trim();
+    }
+  }
+
+  let userPhoto = '';
+
+  try {
+    const contact = ContactsApp.getContact(userEmail);
+
+    if (contact) {
+      if (
+        !userName &&
+        contact.getFullName()
+      ) {
+        userName = contact
+          .getFullName()
+          .trim();
+      }
+
+      userPhoto = contact.getPhotoUrl();
+    }
+  } catch (e) {
+    console.log(
+      'No se pudo consultar ContactsApp: ' +
+      e.message
+    );
+  }
+
+  if (!userName && userEmail) {
+    const namePart = userEmail.split('@')[0];
+
+    const parts = namePart
+      .split(/[\._\-]/)
+      .filter(Boolean);
+
+    if (
+      parts.length > 0 &&
+      !/^\d+$/.test(parts[0]) &&
+      !/^u\d+$/i.test(parts[0])
+    ) {
+      userName = parts
+        .map(function(part) {
+          return part.charAt(0).toUpperCase() +
+            part.slice(1).toLowerCase();
+        })
+        .join(' ');
+    } else {
+      userName = userEmail.split('@')[0];
+    }
+  }
+
+  const data = filteredRows.map(function(row) {
+    const item = {};
+
+    headers.forEach(function(header, index) {
+      item[header] =
+        row[index] !== undefined
+          ? String(row[index]).trim()
+          : '';
+    });
+
+    return item;
+  });
+
+  // ==========================================
+  // 3. RETORNO DEL ROL ACTUALIZADO
+  // ==========================================
+  return {
+    userEmail: userEmail,
+    userName: userName || 'Usuario',
+    userPhoto: userPhoto,
+    role: isCoordinador
+      ? 'Coordinador'
+      : (isSupervisor ? 'Supervisor' : 'Agente'),
+      isAdmin: esAdmin_(), // <-- AGREGAR ESTA LÍNEA
+    data: data
+  };
+}
+
+
+/**
+ * Verifica si el usuario conectado tiene permisos de Administrador.
+ */
+function esAdmin_() {
+  const email = getUserEmailSafe();
+  return CORREOS_COORDINADORES
+    .map(function(e) { return String(e || '').toLowerCase().trim(); })
+    .includes(email);
+}
+
+
+/**
+ * Diagnóstico de permisos de Administrador para la consola web.
+ */
+function esAdminActual(email) {
+  const sessionEmail = getUserEmailSafe();
+  const testEmail = String(email || sessionEmail || '').toLowerCase().trim();
+  const esAdmin = CORREOS_COORDINADORES
+    .map(function(e) { return String(e || '').toLowerCase().trim(); })
+    .includes(testEmail);
+  return {
+    esAdmin: esAdmin,
+    sessionEmail: sessionEmail,
+    webEmail: testEmail,
+    correoWebEnLista: esAdmin,
+    version: 'V6.1'
+  };
+}
+
+
+/**
+ * Obtiene los datos de BBDD_STAFF para KPIs Histórico.
+ */
+function getKpisHistoricoData() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(
+      'BBDD_STAFF'
+    );
+
+    if (!sheet) {
+      throw new Error(
+        'No se encontró la pestaña "BBDD_STAFF".'
+      );
+    }
+
+    const displayValues = sheet
+      .getDataRange()
+      .getDisplayValues();
+
+    if (displayValues.length <= 1) {
+      return [];
+    }
+
+    const headers = displayValues[0].map(function(header) {
+      return String(header).trim();
+    });
+
+    const rows = displayValues.slice(1);
+    const result = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const item = {};
+      let hasValue = false;
+
+      headers.forEach(function(header, index) {
+        const value =
+          row[index] !== undefined
+            ? String(row[index]).trim()
+            : '';
+
+        item[header] = value;
+
+        if (value !== '') {
+          hasValue = true;
+        }
+      });
+
+      if (hasValue) {
+        result.push(item);
+      }
+    }
+
+    return result;
+  } catch (e) {
+    throw new Error(
+      'Error al obtener datos de BBDD_STAFF: ' +
+      e.message
+    );
+  }
+}
+
+
+/**
+ * Obtiene los datos históricos de blindaje.
+ */
+function getBlindajeHistoricoData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(
+    'BBDD_BLINDAJE'
+  );
+
+  if (!sheet) {
+    throw new Error(
+      'No existe una hoja llamada BBDD_BLINDAJE.'
+    );
+  }
+
+  const values = sheet
+    .getDataRange()
+    .getDisplayValues();
+
+  if (!values || values.length === 0) {
+    return {
+      headers: [],
+      data: []
+    };
+  }
+
+  const headers = values[0].map(function(header) {
+    return String(header || '').trim();
+  });
+
+  const data = values
+    .slice(1)
+    .filter(function(row) {
+      return row.some(function(value) {
+        return String(value || '').trim() !== '';
+      });
+    })
+    .map(function(row) {
+      const item = {};
+
+      headers.forEach(function(header, index) {
+        item[header] =
+          row[index] !== undefined
+            ? row[index]
+            : '';
+      });
+
+      return item;
+    });
+
+  return {
+    headers: headers,
+    data: data
+  };
+}
+
+
+/**
+ * Obtiene los datos de Pick Up.
+ */
+function getPickUpData() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(
+      'BBDD_PICKUP'
+    );
+
+    if (!sheet) {
+      throw new Error(
+        'No se encontró la pestaña "BBDD_PICKUP".'
+      );
+    }
+
+    const displayValues = sheet
+      .getDataRange()
+      .getDisplayValues();
+
+    if (displayValues.length <= 1) {
+      return [];
+    }
+
+    const headers = displayValues[0].map(function(header) {
+      return String(header).trim();
+    });
+
+    const rows = displayValues.slice(1);
+    const result = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const item = {};
+      let hasValue = false;
+
+      headers.forEach(function(header, index) {
+        const value =
+          row[index] !== undefined
+            ? String(row[index]).trim()
+            : '';
+
+        item[header] = value;
+
+        if (value !== '') {
+          hasValue = true;
+        }
+      });
+
+      if (hasValue) {
+        result.push(item);
+      }
+    }
+
+    return result;
+  } catch (e) {
+    throw new Error(
+      'Error al obtener datos de Pick Up: ' +
+      e.message
+    );
+  }
+}
+
+
+/**
+ * Obtiene los datos de Delivery.
+ */
+function getDeliveryData() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(
+      'BBDD_DELIVERY'
+    );
+
+    if (!sheet) {
+      throw new Error(
+        'No se encontró la pestaña "BBDD_DELIVERY".'
+      );
+    }
+
+    const displayValues = sheet
+      .getDataRange()
+      .getDisplayValues();
+
+    if (displayValues.length <= 1) {
+      return {
+        headers: [],
+        data: []
+      };
+    }
+
+    const headers = displayValues[0].map(function(header) {
+      return String(header).trim();
+    });
+
+    const rows = displayValues.slice(1);
+    const result = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const item = {};
+      let hasValue = false;
+
+      headers.forEach(function(header, index) {
+        const value =
+          row[index] !== undefined
+            ? String(row[index]).trim()
+            : '';
+
+        item[header] = value;
+
+        if (value !== '') {
+          hasValue = true;
+        }
+      });
+
+      if (hasValue) {
+        result.push(item);
+      }
+    }
+
+    return {
+      headers: headers,
+      data: result
+    };
+  } catch (e) {
+    throw new Error(
+      'Error al obtener datos de Delivery: ' +
+      e.message
+    );
+  }
+}
+
+
+/**
+ * Obtiene los datos de Terminales.
+ */
+function getTerminalesData() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(
+      'TERMINALES'
+    );
+
+    if (!sheet) {
+      throw new Error(
+        'No se encontró la pestaña "TERMINALES".'
+      );
+    }
+
+    const displayValues = sheet
+      .getDataRange()
+      .getDisplayValues();
+
+    if (displayValues.length <= 1) {
+      return {
+        headers: [],
+        data: []
+      };
+    }
+
+    const headers = displayValues[0]
+      .map(function(header) {
+        return String(header).trim();
+      })
+      .filter(function(header) {
+        return header !== '';
+      });
+
+    const rows = displayValues.slice(1);
+    const result = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const item = {};
+      let hasValue = false;
+
+      headers.forEach(function(header, index) {
+        const value =
+          row[index] !== undefined
+            ? String(row[index]).trim()
+            : '';
+
+        item[header] = value;
+
+        if (value !== '') {
+          hasValue = true;
+        }
+      });
+
+      if (hasValue) {
+        result.push(item);
+      }
+    }
+
+    return {
+      headers: headers,
+      data: result
+    };
+  } catch (e) {
+    throw new Error(
+      'Error al obtener datos de Terminales: ' +
+      e.message
+    );
+  }
+}
+
+
+/**
+ * Obtiene los datos de Accesorios.
+ */
+function getAccesoriosData() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(
+      'ACCESORIOS'
+    );
+
+    if (!sheet) {
+      throw new Error(
+        'No se encontró la pestaña "ACCESORIOS".'
+      );
+    }
+
+    const displayValues = sheet
+      .getDataRange()
+      .getDisplayValues();
+
+    if (displayValues.length <= 1) {
+      return {
+        headers: [],
+        data: []
+      };
+    }
+
+    const rawHeaders = displayValues[0].map(function(header) {
+      return String(header).trim();
+    });
+
+    const excludedKeys = [
+      'descuento1',
+      'descuento 1',
+      'descuento2',
+      'descuento 2',
+      'observacion',
+      'observación'
+    ];
+
+    const validHeaderIndices = [];
+    const filteredHeaders = [];
+
+    rawHeaders.forEach(function(header, index) {
+      const cleanHeader = header
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '');
+
+      const isExcluded = excludedKeys.some(function(excluded) {
+        return cleanHeader === excluded
+          .replace(/[^a-z0-9]/g, '');
+      });
+
+      if (
+        header !== '' &&
+        !isExcluded
+      ) {
+        validHeaderIndices.push(index);
+        filteredHeaders.push(header);
+      }
+    });
+
+    const rows = displayValues.slice(1);
+    const result = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const item = {};
+      let hasValue = false;
+
+      validHeaderIndices.forEach(function(originalIndex, newIndex) {
+        const headerName =
+          filteredHeaders[newIndex];
+
+        const value =
+          row[originalIndex] !== undefined
+            ? String(row[originalIndex]).trim()
+            : '';
+
+        item[headerName] = value;
+
+        if (value !== '') {
+          hasValue = true;
+        }
+      });
+
+      if (hasValue) {
+        result.push(item);
+      }
+    }
+
+    return {
+      headers: filteredHeaders,
+      data: result
+    };
+  } catch (e) {
+    throw new Error(
+      'Error al obtener datos de Accesorios: ' +
+      e.message
+    );
+  }
+}
+
+
+/**
+ * Obtiene las opciones de los campos desde BBDD_DATA.
+ */
+function getFormularioOpciones() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const hoja = ss.getSheetByName(
+    'BBDD_DATA'
+  );
+
+  if (!hoja) {
+    throw new Error(
+      'No existe una hoja llamada "BBDD_DATA".'
+    );
+  }
+
+  const valores = hoja
+    .getDataRange()
+    .getDisplayValues();
+
+  if (!valores || valores.length < 2) {
+    return {};
+  }
+
+  const encabezados = valores[0].map(function(encabezado) {
+    return String(encabezado || '').trim();
+  });
+
+  const opciones = {};
+
+  encabezados.forEach(function(nombreColumna, indiceColumna) {
+    if (!nombreColumna) {
+      return;
+    }
+
+    const valoresUnicos = [
+      ...new Set(
+        valores
+          .slice(1)
+          .map(function(fila) {
+            return String(
+              fila[indiceColumna] || ''
+            ).trim();
+          })
+          .filter(function(valor) {
+            return valor !== '';
+          })
+      )
+    ];
+
+    opciones[nombreColumna] = valoresUnicos;
+  });
+
+  return opciones;
+}
+
+
+/**
+ * Normaliza encabezados de la hoja DOTA.
+ */
+function normalizarEncabezadoDota(valor) {
+  return String(valor || '')
+    .toLowerCase()
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+
+/**
+ * Busca un encabezado en DOTA.
+ */
+function buscarIndiceEncabezadoDota(
+  encabezados,
+  nombres
+) {
+  const candidatos = nombres.map(
+    normalizarEncabezadoDota
+  );
+
+  return encabezados.findIndex(function(encabezado) {
+    return candidatos.includes(encabezado);
+  });
+}
+
+
+/**
+ * Indica si el correo pertenece a un perfil Supervisor o Coordinador.
+ * Estos perfiles NO requieren estar registrados en DOTA ni tener
+ * DNI, Usuario, Campaña u Origen de Contacto completos.
+ */
+function esPerfilSupervisorOCoordinador_(correo) {
+  const correoNorm = String(correo || '').toLowerCase().trim();
+
+  if (!correoNorm) {
+    return false;
+  }
+
+  const normalizarLista = function(lista) {
+    return lista.map(function(email) {
+      return String(email || '').toLowerCase().trim();
+    });
+  };
+
+  return (
+    normalizarLista(CORREOS_COORDINADORES).includes(correoNorm) ||
+    normalizarLista(CORREOS_SUPERVISORES).includes(correoNorm)
+  );
+}
+
+
+/**
+ * Lee la hoja DOTA y devuelve los valores junto con los índices
+ * de las columnas necesarias. Devuelve null si la hoja no existe
+ * o no tiene registros.
+ */
+function cargarTablaDota_() {
+  const ss =
+    SpreadsheetApp.getActiveSpreadsheet();
+
+  const hoja =
+    ss.getSheetByName('DOTA');
+
+  if (!hoja) {
+    throw new Error(
+      'No se encontró la hoja "DOTA" en el archivo actual.'
+    );
+  }
+
+  const valores =
+    hoja.getDataRange().getDisplayValues();
+
+  if (!valores || valores.length < 2) {
+    throw new Error(
+      'La hoja DOTA no tiene registros debajo de la fila de encabezados.'
+    );
+  }
+
+  const encabezados =
+    valores[0].map(
+      normalizarEncabezadoDota
+    );
+
+  const idx = {
+    correo: buscarIndiceEncabezadoDota(
+      encabezados,
+      ['Correo Agente', 'Correo', 'Email', 'E-mail']
+    ),
+    usuario: buscarIndiceEncabezadoDota(
+      encabezados,
+      ['Usuario', 'Nombre Usuario']
+    ),
+    dni: buscarIndiceEncabezadoDota(
+      encabezados,
+      ['DNI', 'Documento']
+    ),
+    campania: buscarIndiceEncabezadoDota(
+      encabezados,
+      ['Campaña', 'Campana']
+    ),
+    origenContacto: buscarIndiceEncabezadoDota(
+      encabezados,
+      ['Origen de Contacto', 'Origen Contacto', 'Origen de contacto']
+    )
+  };
+
+  if (idx.correo === -1) {
+    throw new Error('No se encontró el encabezado "Correo Agente" en DOTA.');
+  }
+  if (idx.usuario === -1) {
+    throw new Error('No se encontró el encabezado "Usuario" en DOTA.');
+  }
+  if (idx.dni === -1) {
+    throw new Error('No se encontró el encabezado "DNI" en DOTA.');
+  }
+  if (idx.campania === -1) {
+    throw new Error('No se encontró el encabezado "Campaña" en DOTA.');
+  }
+  if (idx.origenContacto === -1) {
+    throw new Error('No se encontró el encabezado "Origen de Contacto" en DOTA.');
+  }
+
+  return {
+    filas: valores.slice(1),
+    idx: idx
+  };
+}
+
+
+/**
+ * Convierte una fila de DOTA en un registro { correo, usuario, ... }.
+ */
+function filaDotaARegistro_(fila, idx) {
+  const leer = function(i) {
+    return String(fila[i] || '').trim();
+  };
+
+  return {
+    correo: leer(idx.correo),
+    usuario: leer(idx.usuario),
+    dni: leer(idx.dni),
+    campania: leer(idx.campania),
+    origenContacto: leer(idx.origenContacto)
+  };
+}
+
+
+/**
+ * Valida que el registro del ASESOR tenga todos sus datos.
+ */
+function validarRegistroAsesorDota_(registro) {
+  if (!registro.usuario) {
+    throw new Error('El registro del asesor en DOTA no tiene Usuario.');
+  }
+  if (!registro.dni) {
+    throw new Error('El registro del asesor en DOTA no tiene DNI.');
+  }
+  if (!registro.campania) {
+    throw new Error('El registro del asesor en DOTA no tiene Campaña.');
+  }
+  if (!registro.origenContacto) {
+    throw new Error('El registro del asesor en DOTA no tiene Origen de Contacto.');
+  }
+}
+
+
+/**
+ * Normaliza texto para comparar (minúsculas, sin tildes ni espacios extra).
+ */
+function normalizarTextoComparacion_(valor) {
+  return String(valor || '')
+    .toLowerCase()
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+
+/**
+ * Devuelve el primer valor no vacío de `datos` entre las claves indicadas.
+ */
+function primerValorDatos_(datos, claves) {
+  for (let i = 0; i < claves.length; i++) {
+    const v = datos[claves[i]];
+    if (v !== undefined && v !== null && String(v).trim() !== '') {
+      return String(v).trim();
+    }
+  }
+  return '';
+}
+
+
+/**
+ * Obtiene el registro DOTA que se debe usar en el formulario.
+ *
+ * - AGENTE: se usa su propio registro en DOTA (validación estricta).
+ * - SUPERVISOR / COORDINADOR: NO se usan sus datos. Se identifica al
+ *   ASESOR seleccionado en el formulario (por correo, DNI o Usuario)
+ *   y se usan los datos de ese asesor en DOTA.
+ *
+ * @param {Object} datos Datos enviados por el formulario.
+ */
+function getDatosUsuarioDota(datos) {
+  datos = datos || {};
+
+  const correoSesion =
+    obtenerCorreoSesionFormulario_();
+
+  if (!correoSesion) {
+    throw new Error(
+      'No se pudo identificar el correo del usuario conectado. ' +
+      'Verifica la configuración del despliegue.'
+    );
+  }
+
+  const esPrivilegiado =
+    esPerfilSupervisorOCoordinador_(correoSesion);
+
+  const tabla = cargarTablaDota_();
+  const idx = tabla.idx;
+  const filas = tabla.filas;
+
+  // ---------------------------------------------
+  // CASO AGENTE: sus propios datos, estricto
+  // ---------------------------------------------
+  if (!esPrivilegiado) {
+    const filaAgente = filas.find(function(fila) {
+      return String(fila[idx.correo] || '')
+        .trim()
+        .toLowerCase() === correoSesion;
+    });
+
+    if (!filaAgente) {
+      throw new Error(
+        'El correo de la sesión no está registrado en DOTA: ' +
+        correoSesion
+      );
+    }
+
+    const registroAgente = filaDotaARegistro_(filaAgente, idx);
+
+    if (!registroAgente.usuario) {
+      throw new Error('El registro encontrado en DOTA no tiene Usuario.');
+    }
+    if (!registroAgente.dni) {
+      throw new Error('El registro encontrado en DOTA no tiene DNI.');
+    }
+    if (!registroAgente.campania) {
+      throw new Error('El registro encontrado en DOTA no tiene Campaña.');
+    }
+    if (!registroAgente.origenContacto) {
+      throw new Error('El registro encontrado en DOTA no tiene Origen de Contacto.');
+    }
+
+    registroAgente.correo = registroAgente.correo || correoSesion;
+    registroAgente.esPrivilegiado = false;
+    registroAgente.enviadoPor = correoSesion;
+
+    Logger.log('Registro DOTA (agente): ' + JSON.stringify(registroAgente));
+    return registroAgente;
+  }
+
+  // ---------------------------------------------
+  // CASO SUPERVISOR / COORDINADOR: datos del ASESOR seleccionado
+  // ---------------------------------------------
+  const correoAsesor = primerValorDatos_(datos, [
+    'Correo Agente', 'Correo Asesor', 'Correo del Asesor', 'Correo'
+  ]).toLowerCase();
+
+  const dniAsesor = primerValorDatos_(datos, [
+    'DNI', 'DNI Asesor', 'DNI del Asesor'
+  ]);
+
+  const usuarioAsesor = normalizarTextoComparacion_(
+    primerValorDatos_(datos, [
+      'Usuario', 'Usuario Asesor', 'Asesor', 'Nombre Asesor'
+    ])
+  );
+
+  // Se excluye cualquier fila que sea del propio supervisor/coordinador
+  const filasCandidatas = filas.filter(function(fila) {
+    return String(fila[idx.correo] || '')
+      .trim()
+      .toLowerCase() !== correoSesion;
+  });
+
+  let filaAsesor = null;
+
+  if (!filaAsesor && correoAsesor) {
+    filaAsesor = filasCandidatas.find(function(fila) {
+      return String(fila[idx.correo] || '')
+        .trim()
+        .toLowerCase() === correoAsesor;
+    }) || null;
+  }
+
+  if (!filaAsesor && dniAsesor) {
+    filaAsesor = filasCandidatas.find(function(fila) {
+      return String(fila[idx.dni] || '').trim() === dniAsesor;
+    }) || null;
+  }
+
+  if (!filaAsesor && usuarioAsesor) {
+    filaAsesor = filasCandidatas.find(function(fila) {
+      return normalizarTextoComparacion_(fila[idx.usuario]) === usuarioAsesor;
+    }) || null;
+  }
+
+  if (!filaAsesor) {
+    throw new Error(
+      'No se pudo identificar al asesor seleccionado en el formulario. ' +
+      'Los supervisores y coordinadores deben registrar la venta ' +
+      'a nombre de un asesor existente en DOTA.'
+    );
+  }
+
+  const registroAsesor = filaDotaARegistro_(filaAsesor, idx);
+
+  validarRegistroAsesorDota_(registroAsesor);
+
+  registroAsesor.correo = registroAsesor.correo || correoAsesor;
+  registroAsesor.esPrivilegiado = true;
+  registroAsesor.enviadoPor = correoSesion;
+
+  Logger.log('Registro DOTA (asesor elegido por supervisor/coordinador): ' +
+    JSON.stringify(registroAsesor));
+
+  return registroAsesor;
+}
+
+
+/**
+ * Guarda el formulario de venta unificando la validación DOTA
+ * y el procesamiento de Multipedido por filas.
+ */
+function guardarFormularioVenta(datos) {
+  try {
+    if (!datos || typeof datos !== 'object' || Array.isArray(datos)) {
+      throw new Error('No se recibieron datos válidos del formulario.');
+    }
+
+    // 1. Obtener los datos oficiales desde DOTA:
+    //    - Agente: sus propios datos.
+    //    - Supervisor/Coordinador: los datos del ASESOR seleccionado.
+    const datosDota = getDatosUsuarioDota(datos);
+
+    // 2. Sobrescribir los campos oficiales con los del asesor
+    datos['Correo Agente'] = datosDota.correo;
+    datos['Usuario'] = datosDota.usuario;
+    datos['DNI'] = datosDota.dni;
+    datos['Campaña'] = datosDota.campania;
+    datos['Origen de Contacto'] = datosDota.origenContacto;
+
+    // Trazabilidad: quién envió el formulario (solo se guarda si la
+    // hoja de respuestas tiene una columna llamada "Enviado Por")
+    datos['Enviado Por'] = datosDota.enviadoPor;
+
+    // 3. Obtener el libro destino (por ID o libro activo)
+    let ss;
+    try {
+      ss = SpreadsheetApp.openById(ID_SPREADSHEET_DESTINO);
+    } catch (e) {
+      ss = SpreadsheetApp.getActiveSpreadsheet();
+    }
+
+    // Buscar pestaña BBDD_RESPUESTAS o RESPUESTAS_VENTA
+    let hoja = ss.getSheetByName('BBDD_RESPUESTAS') || ss.getSheetByName('RESPUESTAS_VENTA');
+
+    if (!hoja) {
+      hoja = ss.insertSheet('BBDD_RESPUESTAS');
+    }
+
+    // 4. Leer encabezados existentes o inicializarlos
+    let encabezados = [];
+    if (hoja.getLastColumn() > 0) {
+      encabezados = hoja
+        .getRange(1, 1, 1, hoja.getLastColumn())
+        .getDisplayValues()[0]
+        .map(function(h) {
+          return String(h || '').trim();
+        });
+    }
+
+    encabezados = encabezados.filter(function(h) {
+      return h !== '';
+    });
+
+    if (encabezados.length === 0) {
+      const campos = Object.keys(datos).filter(function(c) {
+        return String(c).trim() !== '';
+      });
+      encabezados = ['Fecha de Registro', ...campos];
+      hoja.getRange(1, 1, 1, encabezados.length).setValues([encabezados]);
+    }
+
+    // 5. Determinar las órdenes a guardar (Multipedido)
+    var ordenesAGuardar = [];
+    if (datos['Nro Orden']) ordenesAGuardar.push(datos['Nro Orden']);
+
+    var multipedido = datos['Multipedido'];
+
+    if (multipedido === 'Si Multiple 2' || multipedido === 'Si Multiple 3' || multipedido === 'Si Multiple 4') {
+      if (datos['Nro Orden 2']) ordenesAGuardar.push(datos['Nro Orden 2']);
+    }
+    if (multipedido === 'Si Multiple 3' || multipedido === 'Si Multiple 4') {
+      if (datos['Nro Orden 3']) ordenesAGuardar.push(datos['Nro Orden 3']);
+    }
+    if (multipedido === 'Si Multiple 4') {
+      if (datos['Nro Orden 4']) ordenesAGuardar.push(datos['Nro Orden 4']);
+    }
+
+    if (ordenesAGuardar.length === 0) {
+      ordenesAGuardar.push('');
+    }
+
+    // 6. Insertar una fila individual por cada Nro Orden
+    ordenesAGuardar.forEach(function(numeroOrdenActual) {
+      var datosFilaActual = Object.assign({}, datos);
+
+      datosFilaActual['Nro Orden'] = numeroOrdenActual;
+      datosFilaActual['Nro Orden 1'] = numeroOrdenActual;
+
+      var nuevaFila = encabezados.map(function(columna) {
+        var nombreColumna = String(columna).trim();
+        if (nombreColumna === 'Fecha de Registro') {
+          return new Date();
+        }
+        var valor = datosFilaActual[nombreColumna];
+        return valor !== undefined ? valor : '';
+      });
+
+      hoja.appendRow(nuevaFila);
+    });
+
+    return {
+      exito: true,
+      ok: true,
+      mensaje: 'Se registraron exitosamente ' + ordenesAGuardar.length + ' registro(s) de venta.'
+    };
+
+  } catch (error) {
+    throw new Error('Error al guardar la venta: ' + error.message);
+  }
+}
+
+/**
+ * ====================================================================
+ * MÓDULO EQUIPOS — Backend (pegar en Code.gs)
+ * ====================================================================
+ * Sigue exactamente el mismo patrón que ya usas en getTerminalesData()
+ * y getAccesoriosData(): lee la hoja completa y devuelve
+ * { headers: [...], data: [ {col1:val, col2:val, ...}, ... ] }
+ *
+ * Requisito: debe existir en tu Google Sheet una hoja llamada
+ * literalmente "STOCK_UNIFICADO" con las mismas columnas del Excel
+ * que ya me compartiste (Modelos, PDV, PDV2, GAMA, Stock Distribuido,
+ * ACTIVACION_VEP_..., PORTABILIDAD_VEP_..., RENOVACION_VEP_...,
+ * ACTIVACION_CSI, PORTABILIDAD_CSI, RENOVACION_CSI,
+ * ACTIVACION_PAGO_UNICO_REGULAR, PORTABILIDAD_PAGO_UNICO_REGULAR,
+ * RENOVACION_CONTADO_OFERTA_REGULAR, OPEN, y las columnas de
+ * características técnicas).
+ * ====================================================================
+ */
+function getStockUnificadoData() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('STOCK_UNIFICADO');
+
+  if (!sheet) {
+    throw new Error('No se encontró la hoja "STOCK_UNIFICADO". Verifica el nombre exacto de la pestaña en el Sheet.');
+  }
+
+  var range = sheet.getDataRange();
+  var values = range.getValues();
+  if (values.length < 2) {
+    return { headers: values[0] || [], data: [] };
+  }
+
+  var headers = values[0];
+
+  // ---- Detecta la columna de la foto (tolera "Imagen Equipo", "Imagen equipo",
+  // "IMAGEN_EQUIPO", "Imagen del equipo", "Foto", etc.) ----
+  var colImg = findColIndex(headers, 'Imagen Equipo');
+  if (colImg === -1) {
+    for (var h = 0; h < headers.length; h++) {
+      var hn = String(headers[h]).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (hn.indexOf('imagen') !== -1 || hn.indexOf('foto') !== -1 || hn.indexOf('image') !== -1) { colImg = h; break; }
+    }
+  }
+
+  // ---- Lecturas extra SOLO de la columna de la foto ----
+  var formulas = null, richTexts = null, overGrid = {};
+  if (colImg !== -1) {
+    var nRows = values.length;
+    var colRange = sheet.getRange(range.getRow(), range.getColumn() + colImg, nRows, 1);
+    formulas = colRange.getFormulas();          // =IMAGE("url"), =HYPERLINK("url","texto")
+    richTexts = colRange.getRichTextValues();   // texto con hipervínculo (ej. "Ver foto")
+    try {                                       // imágenes flotantes "sobre las celdas"
+      sheet.getImages().forEach(function (img) {
+        var cell = img.getAnchorCell();
+        if (cell && cell.getColumn() - range.getColumn() === colImg) {
+          var u = '';
+          try { u = img.getUrl() || ''; } catch (e) {}
+          if (u) overGrid[cell.getRow() - range.getRow()] = u;
+        }
+      });
+    } catch (e) {}
+  }
+
+  var data = [];
+  var conImg = 0;
+
+  for (var i = 1; i < values.length; i++) {
+    var rawRow = values[i];
+    // Omite filas completamente vacías
+    var isEmpty = rawRow.every(function (v) { return v === '' || v === null || v === undefined; });
+    if (isEmpty) continue;
+
+    var row = {};
+    for (var j = 0; j < headers.length; j++) {
+      row[headers[j]] = rawRow[j];
+    }
+
+    if (colImg !== -1) {
+      var url = extraerUrlImagenCelda_(rawRow[colImg], formulas[i][0], richTexts[i][0]) || overGrid[i] || '';
+      row['Imagen Equipo'] = url;               // clave canónica que lee el front-end
+      if (url) conImg++;
+    }
+    data.push(row);
+  }
+
+  var outHeaders = headers.slice();
+  if (colImg !== -1 && outHeaders.indexOf('Imagen Equipo') === -1) outHeaders.push('Imagen Equipo');
+
+  return {
+    headers: outHeaders,
+    data: data,
+    imgInfo: {
+      columna: colImg === -1 ? '' : String(headers[colImg]),
+      conValor: conImg,
+      total: data.length
+    }
+  };
+}
+
+/**
+ * Obtiene un texto/URL utilizable a partir de la celda de la foto.
+ * Soporta: URL de texto, ID de Drive suelto, =IMAGE("url"), =HYPERLINK("url"),
+ * texto con hipervínculo (RichText) e imágenes dentro de la celda (CellImage).
+ * Devuelve siempre un string (nunca un objeto) para que google.script.run
+ * pueda enviarlo al navegador.
+ */
+function extraerUrlImagenCelda_(valor, formula, richText) {
+  try {
+    // 1) Fórmula =IMAGE("...") / =IMAGEN("...") / =HYPERLINK("...") / =HIPERVINCULO("...")
+    if (formula) {
+      var m = String(formula).match(/"(https?:\/\/[^"]+)"/i);
+      if (m) return m[1];
+    }
+
+    // 2) Texto con hipervínculo (el texto visible NO es la URL)
+    if (richText && typeof richText.getLinkUrl === 'function') {
+      var lk = richText.getLinkUrl();
+      if (lk) return String(lk);
+      var runs = richText.getRuns ? richText.getRuns() : [];
+      for (var r = 0; r < runs.length; r++) {
+        var lr = runs[r].getLinkUrl();
+        if (lr) return String(lr);
+      }
+    }
+
+    // 3) Imagen insertada dentro de la celda (objeto CellImage)
+    if (valor && typeof valor === 'object') {
+      if (typeof valor.getUrl === 'function') {
+        var u = valor.getUrl();
+        if (u) return String(u);
+      }
+      if (typeof valor.getContentUrl === 'function') {
+        var c = valor.getContentUrl();
+        if (c) return String(c);
+      }
+      return '';
+    }
+
+    // 4) Texto normal
+    var txt = String(valor === null || valor === undefined ? '' : valor).trim();
+    if (!txt) return '';
+
+    // 5) ID de Drive pegado solo (sin URL)
+    if (/^[a-zA-Z0-9_-]{25,}$/.test(txt)) {
+      return 'https://drive.google.com/file/d/' + txt + '/view';
+    }
+
+    // 6) Una URL de Drive dentro de un texto más largo
+    var mu = txt.match(/https?:\/\/[^\s"']+/);
+    if (mu) return mu[0];
+
+    return txt;
+  } catch (e) {
+    return '';
+  }
+}
+
+/**
+ * RESPALDO DE FOTOS: el navegador llama a esta función cuando no pudo
+ * cargar la imagen directamente desde Drive (archivo no compartido como
+ * "Cualquiera con el enlace", cookies de terceros bloqueadas, etc.).
+ *
+ * Lee el archivo con los permisos del script (DriveApp) y lo devuelve como
+ * "data URI" (base64), que el navegador puede mostrar sin pedir permisos.
+ *
+ * @param {string} ref  ID de Drive o URL (Drive u otra).
+ * @return {string} data URI "data:image/...;base64,..." o '' si falla.
+ */
+function getImagenEquipoB64(ref) {
+  try {
+    ref = String(ref || '').trim();
+    if (!ref) return '';
+
+    // Caché (solo entra si la imagen pesa < ~90 KB por límite de CacheService)
+    var cache = CacheService.getScriptCache();
+    var cacheKey = 'imgeq_' + Utilities.base64EncodeWebSafe(
+      Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, ref)
+    ).substring(0, 40);
+    var hit = cache.get(cacheKey);
+    if (hit) return hit;
+
+    var blob = null;
+    var id = '';
+    var m = ref.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) ||
+            ref.match(/[?&]id=([a-zA-Z0-9_-]+)/) ||
+            ref.match(/\/d\/([a-zA-Z0-9_-]+)/);
+    if (m) id = m[1];
+    else if (/^[a-zA-Z0-9_-]{25,}$/.test(ref)) id = ref;
+
+    if (id) {
+      var file = DriveApp.getFileById(id);
+      blob = file.getBlob();
+      // Si la foto original es muy pesada, usa la miniatura de Drive
+      if (blob.getBytes().length > 1500000) {
+        var th = file.getThumbnail();
+        if (th) blob = th;
+      }
+    } else if (/^https?:\/\//i.test(ref)) {
+      var resp = UrlFetchApp.fetch(ref, { muteHttpExceptions: true, followRedirects: true });
+      if (resp.getResponseCode() !== 200) return '';
+      blob = resp.getBlob();
+    }
+
+    if (!blob) return '';
+    var mime = blob.getContentType() || 'image/jpeg';
+    if (mime.indexOf('image/') !== 0) mime = 'image/jpeg';
+    var uri = 'data:' + mime + ';base64,' + Utilities.base64Encode(blob.getBytes());
+
+    if (uri.length < 90000) {
+      try { cache.put(cacheKey, uri, 21600); } catch (e) {}
+    }
+    return uri;
+  } catch (err) {
+    Logger.log('getImagenEquipoB64 error: ' + err);
+    return '';
+  }
+}
+
+/**
+ * EJECUTA ESTA FUNCIÓN UNA VEZ desde el editor (botón ▶) y luego abre
+ * "Ver > Registros de ejecución". Autoriza Drive/UrlFetch y muestra,
+ * paso a paso, dónde se rompe la cadena de la foto.
+ */
+function diagnosticoImagenesEquipo() {
+  var r = getStockUnificadoData();
+  Logger.log('1) Encabezados de la hoja: ' + JSON.stringify(r.headers));
+  Logger.log('2) Columna de foto detectada: "' + (r.imgInfo && r.imgInfo.columna) + '"');
+  Logger.log('3) Filas con foto: ' + (r.imgInfo && r.imgInfo.conValor) + ' de ' + (r.imgInfo && r.imgInfo.total));
+
+  if (!r.imgInfo || !r.imgInfo.columna) {
+    Logger.log('>> PROBLEMA: no existe ninguna columna cuyo nombre contenga "imagen" o "foto". Revisa el encabezado en STOCK_UNIFICADO.');
+    return;
+  }
+  if (!r.imgInfo.conValor) {
+    Logger.log('>> PROBLEMA: la columna existe pero NO se pudo extraer ninguna URL. La celda probablemente tiene una imagen subida desde el computador (sin URL). Pega el link de Drive como texto o como =IMAGE("link").');
+    return;
+  }
+  var vistos = 0;
+  for (var i = 0; i < r.data.length && vistos < 5; i++) {
+    var ref = r.data[i]['Imagen Equipo'];
+    if (!ref) continue;
+    vistos++;
+    Logger.log('--- Modelo: ' + r.data[i]['Modelos']);
+    Logger.log('    URL leída: ' + ref);
+    try {
+      var m = String(ref).match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || String(ref).match(/[?&]id=([a-zA-Z0-9_-]+)/) || String(ref).match(/\/d\/([a-zA-Z0-9_-]+)/);
+      if (m) {
+        var f = DriveApp.getFileById(m[1]);
+        Logger.log('    Drive: archivo "' + f.getName() + '" | tipo ' + f.getMimeType() + ' | acceso: ' + f.getSharingAccess() + ' | permiso: ' + f.getSharingPermission());
+      }
+    } catch (e) {
+      Logger.log('    Drive ERROR (sin permiso o ID inválido): ' + e);
+    }
+    var uri = getImagenEquipoB64(ref);
+    Logger.log('    Descarga en base64: ' + (uri ? 'OK (' + uri.length + ' caracteres)' : 'FALLÓ'));
+  }
+}
+
+function getUserPhoto_() {
+  try {
+    const p = People.People.get('people/me', { personFields: 'photos' });
+    return (p.photos && p.photos[0] && p.photos[0].url) || '';
+  } catch (e) { return ''; }
+}
+// en la respuesta de getDashboardData: userPhoto: getUserPhoto_()

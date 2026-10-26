@@ -1,0 +1,204 @@
+/* =====================================================================
+   PANEL ADMIN · Registro de actividad + estadísticas
+   Pega este archivo como un archivo nuevo (AdminPanel.gs) en tu proyecto
+   de Apps Script, junto a tu Code.gs. No modifica tus funciones actuales.
+   ===================================================================== */
+
+// 1) TU(S) CORREO(S) DE ADMINISTRADOR  <-- CÁMBIALO
+const ADMIN_EMAILS = ['jarol.reyes@konecta.com'];
+
+// 2) Dónde se guarda el registro (hoja LOG_ACTIVIDAD; se crea sola)
+//    Vacío = usa la hoja de cálculo asociada al proyecto.
+//    Si tu script es independiente, pon aquí el ID de tu Google Sheet.
+// 3) Si el servidor NO logra ver el correo del usuario (implementación "Ejecutar como: yo"),
+//    puedes poner true para usar el correo que envía la web. Menos seguro: un usuario técnico
+//    podría falsear su correo. Lo ideal es implementar como "Usuario que accede a la aplicación".
+const ADMIN_CONFIAR_CORREO_WEB = false;
+
+const LOG_SPREADSHEET_ID = '';
+const LOG_SHEET_NAME = 'LOG_ACTIVIDAD';
+const LOG_TZ = 'America/Lima';
+const LOG_MAX_ROWS_READ = 50000; // filas más recientes que se analizan
+
+const LOG_HEADERS = ['Timestamp', 'Fecha', 'Hora', 'Email', 'Nombre', 'Rol', 'Evento', 'Módulo', 'Detalle'];
+const LOG_EVENTOS_OK = { LOGIN: 1, MODULO: 1, BUSQUEDA: 1, FILTRO: 1, FORMULARIO: 1, EXPORTACION: 1, ERROR: 1 };
+
+/* ---------- Utilidades ---------- */
+function admLogSheet_() {
+  const ss = LOG_SPREADSHEET_ID ? SpreadsheetApp.openById(LOG_SPREADSHEET_ID) : SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(LOG_SHEET_NAME);
+  if (!sh) {
+    sh = ss.insertSheet(LOG_SHEET_NAME);
+    sh.getRange(1, 1, 1, LOG_HEADERS.length).setValues([LOG_HEADERS]).setFontWeight('bold');
+    sh.getRange('B:C').setNumberFormat('@'); // fecha y hora como texto
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+function admClip_(v, n) {
+  let s = String(v == null ? '' : v).replace(/[\r\n\t]+/g, ' ').trim().slice(0, n);
+  if (/^[=+\-@]/.test(s)) s = "'" + s; // evita fórmulas inyectadas
+  return s;
+}
+
+function admSesionEmail_() {
+  return String(Session.getActiveUser().getEmail() || '').toLowerCase().trim();
+}
+
+function admEsAdmin_(emailWeb) {
+  let email = admSesionEmail_();
+  if (!email && ADMIN_CONFIAR_CORREO_WEB) email = String(emailWeb || '').toLowerCase().trim();
+  if (!email) return false;
+  return ADMIN_EMAILS.some(function (e) { return String(e).toLowerCase().trim() === email; });
+}
+
+/** Alias de compatibilidad: por si en algún archivo de tu proyecto quedó una llamada al nombre anterior. */
+function esAdmin_(emailWeb) { return admEsAdmin_(emailWeb); }
+
+/** El HTML la consulta para mostrar (o no) la tarjeta del panel. La seguridad real está en getAdminStats. */
+function esAdminActual(emailWeb) { return admEsAdmin_(emailWeb); }
+
+/** Diagnóstico: la web lo usa (triple clic sobre tu nombre en el header). No revela la lista de admins. */
+function getAdminDiag(emailWeb) {
+  const ses = admSesionEmail_();
+  const web = String(emailWeb || '').toLowerCase().trim();
+  const lista = ADMIN_EMAILS.map(function (e) { return String(e).toLowerCase().trim(); });
+  return {
+    sessionEmail: ses,
+    webEmail: web,
+    esAdmin: admEsAdmin_(emailWeb),
+    adminsConfigurados: lista.length,
+    correoWebEnLista: lista.indexOf(web) !== -1,
+    confiarCorreoWeb: ADMIN_CONFIAR_CORREO_WEB,
+    version: 'AdminPanel v2.1'
+  };
+}
+
+function admIsoOk_(s) { return /^\d{4}-\d{2}-\d{2}$/.test(String(s || '')); }
+function admAddDays_(iso, n) {
+  const d = new Date(iso + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/* ---------- Registro (lo llama el HTML en lotes) ---------- */
+function registrarEventos(eventos, perfil) {
+  if (!eventos || !eventos.length) return { ok: true, n: 0 };
+  const email = admSesionEmail_() || String((perfil && perfil.email) || '').toLowerCase().trim() || 'desconocido';
+  const nombre = admClip_(perfil && perfil.nombre, 80);
+  const rol = admClip_(perfil && perfil.rol, 40);
+  const ahora = Date.now();
+  const rows = [];
+
+  eventos.slice(0, 50).forEach(function (e) {
+    if (!e || !LOG_EVENTOS_OK[e.ev]) return;
+    const ts = new Date(Math.min(Number(e.t) || ahora, ahora));
+    rows.push([
+      ts,
+      Utilities.formatDate(ts, LOG_TZ, 'yyyy-MM-dd'),
+      Utilities.formatDate(ts, LOG_TZ, 'HH:mm:ss'),
+      email, nombre, rol,
+      e.ev, admClip_(e.mod, 60), admClip_(e.det, 200)
+    ]);
+  });
+  if (!rows.length) return { ok: true, n: 0 };
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const sh = admLogSheet_();
+    sh.getRange(sh.getLastRow() + 1, 1, rows.length, LOG_HEADERS.length).setValues(rows);
+  } finally {
+    lock.releaseLock();
+  }
+  return { ok: true, n: rows.length };
+}
+
+/* ---------- Estadísticas (solo administrador) ---------- */
+function getAdminStats(desde, hasta, emailWeb) {
+  if (!admEsAdmin_(emailWeb)) throw new Error('No autorizado');
+
+  const hoy = Utilities.formatDate(new Date(), LOG_TZ, 'yyyy-MM-dd');
+  hasta = admIsoOk_(hasta) ? hasta : hoy;
+  desde = admIsoOk_(desde) ? desde : admAddDays_(hasta, -6);
+  if (desde > hasta) { const t = desde; desde = hasta; hasta = t; }
+  if (desde < admAddDays_(hasta, -365)) desde = admAddDays_(hasta, -365);
+
+  const sh = admLogSheet_();
+  const last = sh.getLastRow();
+  let rows = [], truncated = false;
+  if (last >= 2) {
+    const start = Math.max(2, last - LOG_MAX_ROWS_READ + 1);
+    truncated = start > 2;
+    rows = sh.getRange(start, 1, last - start + 1, LOG_HEADERS.length).getValues();
+  }
+
+  // Estructura por día (incluye días sin actividad)
+  const dias = [], diaIdx = {};
+  for (let d = desde; d <= hasta; d = admAddDays_(d, 1)) {
+    diaIdx[d] = dias.length;
+    dias.push({ f: d, logins: 0, usuarios: 0, busquedas: 0, formularios: 0, exportaciones: 0, _u: {} });
+  }
+
+  const tot = { usuarios: 0, logins: 0, busquedas: 0, formularios: 0, exportaciones: 0, modulos: 0, filtros: 0, eventos: 0 };
+  const mods = {}, users = {}, horas = new Array(24).fill(0), usuariosTotales = {};
+  const ultimos = [];
+
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    let fecha = r[1] instanceof Date ? Utilities.formatDate(r[1], LOG_TZ, 'yyyy-MM-dd') : String(r[1]).slice(0, 10);
+    if (fecha < desde || fecha > hasta) continue;
+
+    const hora = String(r[2] || '');
+    const email = String(r[3] || '').toLowerCase();
+    const ev = String(r[6] || '');
+    const mod = String(r[7] || '') || '—';
+    const dia = dias[diaIdx[fecha]];
+    if (!dia) continue;
+
+    tot.eventos++;
+    dia._u[email] = 1;
+    usuariosTotales[email] = 1;
+    const h = parseInt(hora.slice(0, 2), 10);
+    if (h >= 0 && h < 24) horas[h]++;
+
+    const u = users[email] || (users[email] = { email: email, nombre: '', rol: '', logins: 0, acciones: 0, formularios: 0, ultimo: '' });
+    if (!u.nombre && r[4]) u.nombre = String(r[4]);
+    if (!u.rol && r[5]) u.rol = String(r[5]);
+    if (!u.ultimo) u.ultimo = fecha + ' ' + hora; // recorremos de más nuevo a más viejo
+
+    const m = mods[mod] || (mods[mod] = { m: mod, aperturas: 0, busquedas: 0, filtros: 0, exportaciones: 0, _u: {} });
+
+    if (ev === 'LOGIN') { dia.logins++; tot.logins++; u.logins++; }
+    else {
+      u.acciones++;
+      m._u[email] = 1;
+      if (ev === 'MODULO') { m.aperturas++; tot.modulos++; }
+      else if (ev === 'BUSQUEDA') { m.busquedas++; dia.busquedas++; tot.busquedas++; }
+      else if (ev === 'FILTRO') { m.filtros++; tot.filtros++; }
+      else if (ev === 'EXPORTACION') { m.exportaciones++; dia.exportaciones++; tot.exportaciones++; }
+      else if (ev === 'FORMULARIO') { dia.formularios++; tot.formularios++; u.formularios++; }
+    }
+
+    if (ultimos.length < 40) ultimos.push({ f: fecha, h: hora, email: email, nombre: String(r[4] || ''), ev: ev, mod: mod, det: String(r[8] || '') });
+  }
+
+  tot.usuarios = Object.keys(usuariosTotales).length;
+  dias.forEach(function (d) { d.usuarios = Object.keys(d._u).length; delete d._u; });
+  const modulos = Object.keys(mods).map(function (k) {
+    const o = mods[k]; o.usuarios = Object.keys(o._u).length; delete o._u; return o;
+  }).sort(function (a, b) { return (b.aperturas + b.busquedas) - (a.aperturas + a.busquedas); });
+  const usuarios = Object.keys(users).map(function (k) { return users[k]; })
+    .sort(function (a, b) { return b.acciones + b.logins - (a.acciones + a.logins); }).slice(0, 200);
+
+  return {
+    ok: true, desde: desde, hasta: hasta, truncated: truncated,
+    generado: Utilities.formatDate(new Date(), LOG_TZ, 'dd/MM/yyyy HH:mm'),
+    tot: tot, dias: dias, modulos: modulos, horas: horas, usuarios: usuarios, ultimos: ultimos
+  };
+}
+   function testAdmin() {
+     Logger.log(JSON.stringify(getAdminDiag('jarol.reyes@konecta.com')));
+     Logger.log('Hoja: ' + admLogSheet_().getName());
+   }

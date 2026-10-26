@@ -1,0 +1,35 @@
+# Dependencias
+/node_modules
+/.pnp
+.pnp.js
+
+# Build y Producción
+/.next/
+/out/
+/build
+dist
+
+# Variables de entorno y secretos locales (NUNCA subir a GitHub)
+.env*.local
+.env
+*.pem
+*.key
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Vercel
+.vercel
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Sistema operativo y editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

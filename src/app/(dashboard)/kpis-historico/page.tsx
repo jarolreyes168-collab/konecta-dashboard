@@ -1,0 +1,19 @@
+import React from 'react';
+import { BarChart3 } from 'lucide-react';
+
+export default function KpisHistoricoPage() {
+  return (
+    <div className="max-w-7xl mx-auto space-y-4">
+      <div className="flex items-center gap-2">
+        <BarChart3 className="w-5 h-5 text-konecta-blue dark:text-indigo-400" />
+        <h1 className="text-xl font-bold text-slate-900 dark:text-white">KPIs Histórico (BBDD_STAFF)</h1>
+      </div>
+      <p className="text-xs text-slate-500 dark:text-slate-400">
+        Evolución histórica por personal, dotación y meses de operación.
+      </p>
+      <div className="p-8 rounded-2xl bg-white dark:bg-[#141D2D] border border-slate-200 dark:border-slate-800 text-center text-xs text-slate-400">
+        Módulo de KPIs Histórico conectado con BBDD_STAFF.
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --konecta-blue: #1F00B8;
+  --entel-blue: #005CFF;
+  --entel-dark: #00246B;
+  --bg-page: #F8FAFC;
+  --bg-surface: #FFFFFF;
+  --text-main: #0F172A;
+}
+
+[data-theme="dark"] {
+  --bg-page: #0B0F19;
+  --bg-surface: #141D2D;
+  --text-main: #F8FAFC;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--bg-page);
+  color: var(--text-main);
+  min-height: 100vh;
+}

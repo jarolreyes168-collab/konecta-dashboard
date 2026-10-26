@@ -1,0 +1,62 @@
+/**
+ * FormFlow.gs — guarda y entrega la configuración de flujos del formulario.
+ * Pégalo como archivo nuevo en tu proyecto de Apps Script y publica una NUEVA VERSIÓN.
+ * Requiere que ya exista esAdminActual(email) (viene en AdminPanel.gs).
+ */
+const FF_PROP = 'FORM_FLOW_CFG';
+const FF_HIST = 'FORM_FLOW_HIST';   // últimas versiones, para poder volver atrás
+const FF_CHUNK = 8000;              // las propiedades admiten ~9 KB por valor
+
+function ffLeer_(prefix) {
+  const p = PropertiesService.getScriptProperties();
+  const n = Number(p.getProperty(prefix + '_N') || 0);
+  let s = '';
+  for (let i = 0; i < n; i++) s += p.getProperty(prefix + '_' + i) || '';
+  return s;
+}
+function ffEscribir_(prefix, txt) {
+  const p = PropertiesService.getScriptProperties();
+  const viejo = Number(p.getProperty(prefix + '_N') || 0);
+  const n = Math.ceil(txt.length / FF_CHUNK);
+  for (let i = 0; i < n; i++) p.setProperty(prefix + '_' + i, txt.substr(i * FF_CHUNK, FF_CHUNK));
+  for (let i = n; i < viejo; i++) p.deleteProperty(prefix + '_' + i);
+  p.setProperty(prefix + '_N', String(n));
+}
+
+// Lo llama el formulario de CUALQUIER usuario. Devuelve '' si no hay config guardada.
+function getFormFlowConfig() {
+  return ffLeer_(FF_PROP);
+}
+
+// Solo administradores.
+function saveFormFlowConfig(json, email) {
+  if (!esAdminActual(email)) throw new Error('No autorizado');
+  const cfg = JSON.parse(json);                       // valida que sea JSON
+  if (!cfg || !Array.isArray(cfg.reglas) || typeof cfg.grupos !== 'object') throw new Error('Configuración inválida');
+  const lock = LockService.getScriptLock(); lock.waitLock(10000);
+  try {
+    const previo = ffLeer_(FF_PROP);
+    if (previo) {                                      // guarda las últimas 5 versiones
+      let hist = []; try { hist = JSON.parse(ffLeer_(FF_HIST) || '[]'); } catch (e) { }
+      hist.unshift({ t: new Date().toISOString(), por: String(email || ''), cfg: previo });
+      ffEscribir_(FF_HIST, JSON.stringify(hist.slice(0, 5)));
+    }
+    ffEscribir_(FF_PROP, JSON.stringify(cfg));
+  } finally { lock.releaseLock(); }
+  return true;
+}
+
+// Solo administradores: lista de versiones anteriores (índice 0 = la más reciente).
+function getFormFlowHistorial(email) {
+  if (!esAdminActual(email)) throw new Error('No autorizado');
+  let hist = []; try { hist = JSON.parse(ffLeer_(FF_HIST) || '[]'); } catch (e) { }
+  return hist.map((h, i) => ({ i: i, t: h.t, por: h.por }));
+}
+
+// Solo administradores: devuelve el JSON de una versión anterior (no la publica).
+function getFormFlowVersion(i, email) {
+  if (!esAdminActual(email)) throw new Error('No autorizado');
+  const hist = JSON.parse(ffLeer_(FF_HIST) || '[]');
+  if (!hist[i]) throw new Error('Versión no encontrada');
+  return hist[i].cfg;
+}
