@@ -55,9 +55,7 @@ export class AuditSheetsAdapter {
     const values = res.data.values || [];
     if (values.length <= 1) return [];
 
-    const rows = values.slice(1).reverse().slice(0, limit);
-
-    return rows.map(r => ({
+    const rows = (values.slice(1).reverse().slice(0, limit) as any[]).map((r: any) => ({
       timestamp: String(r[0] || ''),
       fecha: String(r[1] || ''),
       hora: String(r[2] || ''),

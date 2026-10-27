@@ -80,13 +80,13 @@ export class ConsolidadoSheetsAdapter implements IDataRepository<ConsolidadoReco
       return { records: [], headerMap: new Map() };
     }
 
-    const rawHeaders: string[] = values[0];
+    const rawHeaders: string[] = values[0] || [];
     const headerMap = new Map<string, number>();
-    rawHeaders.forEach((h, index) => {
+    rawHeaders.forEach((h: any, index: number) => {
       headerMap.set(this.normalizeHeader(h), index);
     });
 
-    const records: ConsolidadoRecord[] = values.slice(1).map((row, index) => {
+    const records: ConsolidadoRecord[] = (values.slice(1) as any[]).map((row: any, index: number) => {
       return this.mapRowToRecord(row, headerMap, index);
     });
 

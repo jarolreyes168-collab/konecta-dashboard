@@ -31,9 +31,9 @@ export class DotaSheetsAdapter {
       return { isSupervisor: false, isCoordinador: false, supervisorEmail: userEmail, agentes: [] };
     }
 
-    const rawHeaders: string[] = rows[0];
+    const rawHeaders: string[] = rows[0] || [];
     const headerMap = new Map<string, number>();
-    rawHeaders.forEach((h, idx) => headerMap.set(this.normalizeHeader(h), idx));
+    rawHeaders.forEach((h: any, idx: number) => headerMap.set(this.normalizeHeader(h), idx));
 
     const colCorreoSuper = headerMap.get('correosupervisor') ?? -1;
     const colCorreoCoord = headerMap.get('correocoordinador') ?? -1;
