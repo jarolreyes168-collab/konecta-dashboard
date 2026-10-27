@@ -40,7 +40,7 @@ export default async function ResumenPage() {
       <div>
         <h1 className="text-xl font-bold text-slate-900 dark:text-white">Resumen General de Operaciones</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-          Conectado con la hoja Google Sheets: <code className="font-mono text-konecta-blue dark:text-indigo-400">1tvTwpiG83FJoeSxBnS2a6OLksZzkrPx-pRefTvTcXmU</code>
+          Conectado con la hoja Google Sheets: <code className="font-mono text-konecta-blue dark:text-indigo-400">{process.env.GOOGLE_SHEET_ID || '1tvTwpiG83FJoeSxBnS2a6OLksZzkrPx-pRefTvTcXmU'}</code>
         </p>
       </div>
 
