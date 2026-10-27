@@ -5,9 +5,10 @@ let sheetsClientInstance: any = null;
 
 /**
  * Normaliza y repara la clave privada PEM eliminando comillas accidentales,
- * corrigiendo saltos de línea escapados (\n) o reales, extrayendo el contenido
- * de un JSON completo si se pegó el archivo entero, y formateando en bloques
- * de 64 caracteres estándar para compatibilidad total con OpenSSL 3.0 / Node.js crypto.
+ * corrigiendo saltos de línea escapados (\n) o reales, auto-envolviendo en cabeceras
+ * si se pegó solo el cuerpo Base64 sin cabeceras, extrayendo el contenido de un JSON
+ * completo si se pegó el archivo entero, y formateando en bloques de 64 caracteres
+ * estándar para compatibilidad total con OpenSSL 3.0 / Node.js crypto.
  */
 export function formatPrivateKey(rawKey: string): string {
   if (!rawKey) return '';
@@ -25,25 +26,20 @@ export function formatPrivateKey(rawKey: string): string {
     }
   }
 
-  // 2. Quitar comillas exteriores ("..." o '...') repetidas
+  // 2. Quitar comillas exteriores repetidas
   while ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) {
     key = key.slice(1, -1).trim();
   }
 
-  // 3. Soporte si la clave se guardó codificada en Base64
-  if (!key.includes('BEGIN') && !key.includes('KEY')) {
-    try {
-      const decoded = Buffer.from(key, 'base64').toString('utf8');
-      if (decoded.includes('BEGIN') && decoded.includes('KEY')) {
-        key = decoded.trim();
-      }
-    } catch {
-      // no es base64
-    }
-  }
-
-  // 4. Reemplazar todas las variantes de \n literales escapadas (\\n, \r\n, \\\\n, etc.)
+  // 3. Reemplazar todas las variantes de \n literales escapadas (\\n, \r\n, \\\\n, etc.)
   key = key.replace(/\\+r/g, '\r').replace(/\\+n/g, '\n');
+
+  // 4. Si NO tiene BEGIN pero tiene más de 100 caracteres (cuerpo Base64 puro sin cabeceras)
+  if (!key.includes('BEGIN')) {
+    const cleanOnly = key.replace(/[\s\r\n]+/g, '');
+    const chunks = cleanOnly.match(/.{1,64}/g) || [cleanOnly];
+    return `-----BEGIN PRIVATE KEY-----\n${chunks.join('\n')}\n-----END PRIVATE KEY-----\n`;
+  }
 
   // 5. Detectar tipo exacto de cabecera PEM
   let header = '-----BEGIN PRIVATE KEY-----';
@@ -57,16 +53,12 @@ export function formatPrivateKey(rawKey: string): string {
     footer = '-----END ENCRYPTED PRIVATE KEY-----';
   }
 
-  // 6. Extraer y purificar el cuerpo Base64
-  if (key.includes(header) && key.includes(footer)) {
-    const startIndex = key.indexOf(header) + header.length;
-    const endIndex = key.indexOf(footer);
+  // 6. Si tiene cabeceras, extraer y purificar el cuerpo Base64
+  const startIndex = key.indexOf(header) + header.length;
+  const endIndex = key.indexOf(footer);
+  if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
     const body = key.slice(startIndex, endIndex);
-
-    // Eliminar absolutamente todos los espacios, saltos de línea y tabulaciones del cuerpo base64
     const cleanBody = body.replace(/[\s\r\n]+/g, '');
-
-    // Formatear en bloques estándar de 64 caracteres PEM (exigido por OpenSSL 3.0)
     const chunks = cleanBody.match(/.{1,64}/g) || [cleanBody];
     return `${header}\n${chunks.join('\n')}\n${footer}\n`;
   }
