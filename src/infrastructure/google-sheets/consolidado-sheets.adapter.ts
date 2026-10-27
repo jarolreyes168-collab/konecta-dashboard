@@ -71,7 +71,7 @@ export class ConsolidadoSheetsAdapter implements IDataRepository<ConsolidadoReco
 
     const response = await client.spreadsheets.values.get({
       spreadsheetId,
-      range: `${this.sheetName}!A1:Z`,
+      range: `${this.sheetName}!A1:ZZ`,
       valueRenderOption: 'FORMATTED_VALUE',
     });
 
