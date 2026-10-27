@@ -1,11 +1,8 @@
 import { google } from 'googleapis';
+import { getAppsScriptSheetsClient } from './apps-script-client';
 
-let sheetsClientInstance: ReturnType<typeof google.sheets> | null = null;
+let sheetsClientInstance: any = null;
 
-/**
- * Retorna un cliente singleton autenticado de Google Sheets API
- * mediante Cuenta de Servicio (Service Account) con JWT.
- */
 /**
  * Normaliza y repara la clave privada PEM eliminando comillas accidentales,
  * corrigiendo saltos de línea escapados (\n) o reales, y asegurando
@@ -49,8 +46,20 @@ export function formatPrivateKey(rawKey: string): string {
   return key;
 }
 
+/**
+ * Retorna el cliente de Google Sheets:
+ * 1. Si GOOGLE_APPS_SCRIPT_URL está definido, usa el puente Apps Script Webhook
+ *    (evita bloqueos de seguridad / directivas de uso compartido corporativo de Konecta).
+ * 2. Si no, usa autenticación JWT con Service Account de Google Cloud.
+ */
 export async function getGoogleSheetsClient() {
   if (sheetsClientInstance) {
+    return sheetsClientInstance;
+  }
+
+  const appsScriptUrl = process.env.GOOGLE_APPS_SCRIPT_URL?.trim();
+  if (appsScriptUrl) {
+    sheetsClientInstance = getAppsScriptSheetsClient(appsScriptUrl);
     return sheetsClientInstance;
   }
 
@@ -60,7 +69,7 @@ export async function getGoogleSheetsClient() {
 
   if (!email || !privateKey) {
     throw new Error(
-      'Faltan configurar las credenciales GOOGLE_SERVICE_ACCOUNT_EMAIL o GOOGLE_PRIVATE_KEY en las variables de entorno.'
+      'Faltan configurar las credenciales: Define GOOGLE_APPS_SCRIPT_URL o (GOOGLE_SERVICE_ACCOUNT_EMAIL y GOOGLE_PRIVATE_KEY).'
     );
   }
 
@@ -77,6 +86,9 @@ export async function getGoogleSheetsClient() {
 export function getTargetSheetId(): string {
   const id = process.env.GOOGLE_SHEET_ID;
   if (!id) {
+    if (process.env.GOOGLE_APPS_SCRIPT_URL) {
+      return 'APPS_SCRIPT_ACTIVE_SHEET';
+    }
     throw new Error('GOOGLE_SHEET_ID no está configurado en las variables de entorno.');
   }
   return id;
